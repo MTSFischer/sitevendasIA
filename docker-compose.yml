@@ -1,0 +1,24 @@
+version: '3.8'
+
+services:
+  ia-atendimento:
+    build: .
+    container_name: ia-atendimento
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./sessions:/app/sessions   # Sessões WhatsApp persistentes
+      - ./data:/app/data           # Banco de dados SQLite
+      - ./temp:/app/temp           # Arquivos de áudio temporários
+      - ./logs:/app/logs           # Logs
+    env_file:
+      - .env
+    environment:
+      - NODE_ENV=production
+    networks:
+      - atendimento-net
+
+networks:
+  atendimento-net:
+    driver: bridge

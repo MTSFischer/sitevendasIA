@@ -137,3 +137,19 @@ dist
 # Vite logs files
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
+
+# WhatsApp sessions (dados de autenticação — nunca commitar)
+sessions/
+
+# Banco de dados local
+data/
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+
+# Arquivos de áudio temporários
+temp/
+
+# Logs da aplicação
+logs/
+*.log
