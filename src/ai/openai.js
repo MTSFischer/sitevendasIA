@@ -2,6 +2,7 @@
 
 const OpenAI = require('openai');
 const config = require('../config');
+const { withRetry } = require('./retry');
 const { BASE_SYSTEM, MENU_INICIAL } = require('./prompts/base');
 const { LIMPA_NOMES_SYSTEM } = require('./prompts/limpaNomes');
 const { REVISAO_CONTRATUAL_SYSTEM } = require('./prompts/revisaoContratual');
@@ -35,7 +36,7 @@ function buildSystemPrompt(segment) {
 async function detectSegment(userMessage) {
   const openai = getClient();
 
-  const response = await openai.chat.completions.create({
+  const response = await withRetry(() => openai.chat.completions.create({
     model: config.openai.model,
     temperature: 0,
     max_tokens: 20,
@@ -51,7 +52,7 @@ Responda APENAS com uma das opções abaixo (sem explicação):
       },
       { role: 'user', content: userMessage },
     ],
-  });
+  }));
 
   const result = response.choices[0]?.message?.content?.trim() || 'INDEFINIDO';
   const valid = ['LIMPA_NOMES', 'REVISAO_CONTRATUAL', 'MULTAS_CNH', 'INDEFINIDO'];
@@ -69,7 +70,7 @@ async function extractLeadData(messages) {
     .map(m => `${m.role === 'user' ? 'Cliente' : 'Assistente'}: ${m.content}`)
     .join('\n');
 
-  const response = await openai.chat.completions.create({
+  const response = await withRetry(() => openai.chat.completions.create({
     model: config.openai.model,
     temperature: 0,
     max_tokens: 300,
@@ -94,7 +95,7 @@ Temperatura:
       },
       { role: 'user', content: conversation },
     ],
-  });
+  }));
 
   try {
     const text = response.choices[0]?.message?.content?.trim() || '{}';
@@ -141,7 +142,6 @@ async function generateResponse(conversation, userMessage, segment) {
   const openai = getClient();
 
   const systemPrompt = buildSystemPrompt(segment === 'INDEFINIDO' ? null : segment);
-
   const historyMessages = conversation.messages.slice(-config.openai.maxHistory);
 
   const messages = [
@@ -150,14 +150,15 @@ async function generateResponse(conversation, userMessage, segment) {
     { role: 'user', content: userMessage },
   ];
 
-  const response = await openai.chat.completions.create({
+  const response = await withRetry(() => openai.chat.completions.create({
     model: config.openai.model,
     temperature: config.openai.temperature,
     max_tokens: config.openai.maxTokens,
     messages,
-  });
+  }));
 
-  return response.choices[0]?.message?.content?.trim() || 'Desculpe, tive um problema ao processar sua mensagem. Pode repetir?';
+  return response.choices[0]?.message?.content?.trim()
+    || 'Desculpe, tive um problema ao processar sua mensagem. Pode repetir?';
 }
 
 module.exports = {

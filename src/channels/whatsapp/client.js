@@ -16,6 +16,7 @@ const pino = require('pino');
 const config = require('../../config');
 const logger = require('../../utils/logger');
 const queue = require('../../services/queue');
+const dedup = require('../../services/dedup');
 
 /**
  * Representa um cliente WhatsApp para um único número.
@@ -94,6 +95,14 @@ class WhatsAppClient {
 
     const from = msg.key.remoteJid;
     const clientNumber = from.replace('@s.whatsapp.net', '');
+
+    // Deduplicação: ignora se essa mensagem já foi processada
+    const msgId = msg.key.id;
+    if (dedup.isDuplicate(msgId)) {
+      logger.debug({ msgId, from: clientNumber }, 'Mensagem duplicada ignorada');
+      return;
+    }
+
     const text = this._extractMessageText(msg);
 
     if (!text || text.trim().length === 0) {
@@ -131,9 +140,54 @@ class WhatsAppClient {
       m?.imageMessage?.caption ||
       m?.videoMessage?.caption ||
       m?.buttonsResponseMessage?.selectedDisplayText ||
+      // Lista interativa: prefere o rowId (ex: "LIMPA_NOMES") para detecção de segmento
+      m?.listResponseMessage?.singleSelectReply?.selectedRowId ||
       m?.listResponseMessage?.title ||
       null
     );
+  }
+
+  /**
+   * Envia o menu interativo de segmentos (lista de seleção única)
+   * Inclui aviso de LGPD no rodapé.
+   */
+  async sendListMenu(to) {
+    if (!this.socket || !this.isReady) return;
+    try {
+      await this.socket.sendMessage(to, {
+        text: '👋 Olá! Sou a *ARIA*, assistente virtual.\n\n⚠️ _Seus dados são usados apenas para análise preliminar e contato (LGPD). Solicite exclusão a qualquer momento._\n\nComo posso te ajudar hoje?',
+        footer: 'Selecione um dos serviços abaixo:',
+        buttonText: 'Ver opções',
+        sections: [
+          {
+            title: 'Nossos Serviços',
+            rows: [
+              {
+                id: 'LIMPA_NOMES',
+                title: '🔴 Limpa Nomes',
+                description: 'Nome negativado, Serasa, SPC, dívidas',
+              },
+              {
+                id: 'REVISAO_CONTRATUAL',
+                title: '📄 Revisão Contratual',
+                description: 'Juros abusivos, financiamentos, contratos',
+              },
+              {
+                id: 'MULTAS_CNH',
+                title: '🚗 Multas de Trânsito',
+                description: 'Pontos, suspensão, cassação de CNH',
+              },
+            ],
+          },
+        ],
+        listType: 1,
+      });
+    } catch (err) {
+      // Lista interativa pode não funcionar em todos os clientes WA — fallback para texto
+      logger.warn({ err: err.message, to }, 'WA: lista interativa falhou, enviando menu em texto');
+      await this._sendText(to,
+        '👋 Olá! Sou a *ARIA*, assistente virtual.\n\n⚠️ _Seus dados são usados apenas para análise preliminar (LGPD)._\n\nComo posso te ajudar?\n\n1️⃣ Limpa Nomes (Serasa/SPC)\n2️⃣ Revisão de Contrato / Juros\n3️⃣ Multas / CNH\n\nDigite 1, 2 ou 3, ou descreva sua situação!');
+    }
   }
 
   async _setTyping(jid, composing) {

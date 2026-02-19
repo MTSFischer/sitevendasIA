@@ -46,6 +46,10 @@ const config = {
     maxChars: parseInt(process.env.AUDIO_MAX_CHARS || '500', 10),
     tempPath: './temp',
   },
+
+  admin: {
+    apiKey: process.env.ADMIN_API_KEY || '',
+  },
 };
 
 function parseWhatsAppSegmentos(raw) {

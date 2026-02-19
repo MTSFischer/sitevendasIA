@@ -30,15 +30,24 @@ async function routeMessage(event, whatsappManager) {
       return;
     }
 
-    // 3. Envia a resposta ao cliente
+    // 3. Envia o menu interativo ANTES da resposta da IA em novas conversas WA
+    if (result.isNewConversation && channel === 'whatsapp' && whatsappManager) {
+      const client = whatsappManager.clients.get(whatsappNumber);
+      if (client) {
+        const jid = `${channelId}@s.whatsapp.net`;
+        await client.sendListMenu(jid);
+      }
+    }
+
+    // 4. Envia a resposta ao cliente
     await send(result);
 
-    // 4. Limpa arquivo de áudio temporário se houver
+    // 5. Limpa arquivo de áudio temporário se houver
     if (result.cleanup) {
       result.cleanup();
     }
 
-    // 5. Verifica se deve fazer handoff
+    // 6. Verifica se deve fazer handoff
     if (result.wantsHandoff || await shouldAutoHandoff(result.conversationId)) {
       const handoffMsg = getHandoffMessage(result.segment);
       await send({ type: 'text', text: handoffMsg });
@@ -52,7 +61,7 @@ async function routeMessage(event, whatsappManager) {
       return;
     }
 
-    // 6. Qualificação periódica do lead
+    // 7. Qualificação periódica do lead
     const messages = ConversationModel.getMessages(result.conversationId, 50);
     if (shouldQualify(messages.length)) {
       await qualifyLead(result.conversationId).catch(err => {
