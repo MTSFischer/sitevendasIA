@@ -6,7 +6,8 @@
   "scripts": {
     "start": "node src/index.js",
     "dev": "nodemon src/index.js",
-    "setup": "node src/database/setup.js"
+    "setup": "node src/database/setup.js",
+    "build:dist": "bash scripts/build-dist.sh"
   },
   "dependencies": {
     "@hapi/boom": "^10.0.1",
