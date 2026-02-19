@@ -3,6 +3,7 @@
 const express = require('express');
 const crypto = require('crypto');
 const config = require('../config');
+const logger = require('../utils/logger');
 
 const router = express.Router();
 
@@ -24,7 +25,7 @@ router.get('/webhook/instagram', (req, res) => {
 router.post('/webhook/instagram', (req, res) => {
   // Verifica assinatura do Meta para segurança
   if (!verifyMetaSignature(req)) {
-    console.warn('[Webhook] Assinatura inválida do Meta');
+    logger.warn('Webhook: assinatura inválida do Meta');
     return res.sendStatus(403);
   }
 
@@ -32,7 +33,7 @@ router.post('/webhook/instagram', (req, res) => {
 
   if (instagramClient) {
     instagramClient.handleWebhookEvent(req.body).catch(err => {
-      console.error('[Webhook Instagram] Erro:', err.message);
+      logger.error({ err: err.message }, 'Webhook Instagram: erro ao processar evento');
     });
   }
 });

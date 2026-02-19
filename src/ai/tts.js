@@ -5,6 +5,7 @@ const fs = require('fs');
 const path = require('path');
 const { v4: uuidv4 } = require('uuid');
 const config = require('../config');
+const logger = require('../utils/logger');
 
 let client;
 
@@ -74,7 +75,7 @@ async function textToSpeech(text) {
 
     return oggPath;
   } catch (err) {
-    console.error('[TTS] Erro ao gerar áudio:', err.message);
+    logger.error({ err: err.message }, 'TTS: erro ao gerar áudio');
     // Limpa arquivos em caso de erro
     if (fs.existsSync(mp3Path)) fs.unlinkSync(mp3Path);
     if (fs.existsSync(oggPath)) fs.unlinkSync(oggPath);

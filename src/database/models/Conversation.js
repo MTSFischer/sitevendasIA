@@ -7,23 +7,27 @@ const ConversationModel = {
   findOrCreate(channel, channelId, whatsappNumber = null) {
     const db = getDb();
 
-    let conv = db.prepare(`
-      SELECT * FROM conversations
-      WHERE channel = ? AND channel_id = ? AND status = 'active'
-      ORDER BY created_at DESC LIMIT 1
-    `).get(channel, channelId);
+    // Usa transação para eliminar a race condition TOCTOU (time-of-check/time-of-use)
+    const result = db.transaction(() => {
+      let conv = db.prepare(`
+        SELECT * FROM conversations
+        WHERE channel = ? AND channel_id = ? AND status = 'active'
+        ORDER BY created_at DESC LIMIT 1
+      `).get(channel, channelId);
 
-    if (!conv) {
-      const id = uuidv4();
-      db.prepare(`
-        INSERT INTO conversations (id, channel, channel_id, whatsapp_number)
-        VALUES (?, ?, ?, ?)
-      `).run(id, channel, channelId, whatsappNumber);
+      if (!conv) {
+        const id = uuidv4();
+        db.prepare(`
+          INSERT INTO conversations (id, channel, channel_id, whatsapp_number)
+          VALUES (?, ?, ?, ?)
+        `).run(id, channel, channelId, whatsappNumber);
+        conv = db.prepare('SELECT * FROM conversations WHERE id = ?').get(id);
+      }
 
-      conv = db.prepare('SELECT * FROM conversations WHERE id = ?').get(id);
-    }
+      return conv;
+    })();
 
-    return conv;
+    return result;
   },
 
   findById(id) {
@@ -58,22 +62,27 @@ const ConversationModel = {
   },
 
   addMessage(conversationId, role, content, audioUrl = null) {
+    const db = getDb();
     const id = uuidv4();
-    getDb().prepare(`
-      INSERT INTO messages (id, conversation_id, role, content, audio_url)
-      VALUES (?, ?, ?, ?, ?)
-    `).run(id, conversationId, role, content, audioUrl);
 
-    // Mantém apenas os últimos N mensagens para não crescer indefinidamente
-    getDb().prepare(`
-      DELETE FROM messages
-      WHERE conversation_id = ? AND id NOT IN (
-        SELECT id FROM messages
-        WHERE conversation_id = ?
-        ORDER BY created_at DESC
-        LIMIT 40
-      )
-    `).run(conversationId, conversationId);
+    // Transação: INSERT + limpeza do histórico como operação atômica
+    db.transaction(() => {
+      db.prepare(`
+        INSERT INTO messages (id, conversation_id, role, content, audio_url)
+        VALUES (?, ?, ?, ?, ?)
+      `).run(id, conversationId, role, content, audioUrl);
+
+      // Mantém apenas as últimas 40 mensagens por conversa
+      db.prepare(`
+        DELETE FROM messages
+        WHERE conversation_id = ? AND id NOT IN (
+          SELECT id FROM messages
+          WHERE conversation_id = ?
+          ORDER BY created_at DESC
+          LIMIT 40
+        )
+      `).run(conversationId, conversationId);
+    })();
 
     return id;
   },

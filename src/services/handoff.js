@@ -1,6 +1,7 @@
 'use strict';
 
 const config = require('../config');
+const logger = require('../utils/logger');
 const ConversationModel = require('../database/models/Conversation');
 const LeadModel = require('../database/models/Lead');
 
@@ -19,7 +20,7 @@ async function executeHandoff({ conversationId, lead, whatsappManager }) {
     await notifyHandoffNumber(whatsappManager, conversationId, lead);
   }
 
-  console.log(`[Handoff] Conversa ${conversationId} transferida para atendimento humano`);
+  logger.info({ conversationId }, 'Handoff: conversa transferida para atendimento humano');
 }
 
 async function notifyHandoffNumber(whatsappManager, conversationId, lead) {
@@ -56,7 +57,7 @@ async function notifyHandoffNumber(whatsappManager, conversationId, lead) {
       { type: 'text', text: notification }
     );
   } catch (err) {
-    console.error('[Handoff] Erro ao notificar:', err.message);
+    logger.error({ err: err.message }, 'Handoff: erro ao notificar número de handoff');
   }
 }
 

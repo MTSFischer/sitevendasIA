@@ -4,6 +4,7 @@ const { processMessage } = require('../services/conversation');
 const { qualifyLead, shouldQualify } = require('../services/lead');
 const { executeHandoff, getHandoffMessage } = require('../services/handoff');
 const ConversationModel = require('../database/models/Conversation');
+const logger = require('../utils/logger');
 
 /**
  * Roteador principal de mensagens
@@ -55,11 +56,11 @@ async function routeMessage(event, whatsappManager) {
     const messages = ConversationModel.getMessages(result.conversationId, 50);
     if (shouldQualify(messages.length)) {
       await qualifyLead(result.conversationId).catch(err => {
-        console.error('[Router] Erro na qualificação do lead:', err.message);
+        logger.error({ err: err.message }, 'Router: erro na qualificação do lead');
       });
     }
   } catch (err) {
-    console.error(`[Router] Erro ao processar mensagem de ${channel}/${channelId}:`, err);
+    logger.error({ err, channel, channelId }, 'Router: erro ao processar mensagem');
 
     try {
       await send({

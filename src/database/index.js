@@ -27,7 +27,9 @@ function initDb() {
   db.pragma('foreign_keys = ON');
 
   createTables();
-  console.log(`[DB] Banco de dados iniciado em: ${dbPath}`);
+  // Usa console.log pois o logger pino depende do config que pode depender do DB
+  // neste ponto do bootstrap a ordem de inicialização importa
+  process.stdout.write(`[DB] Banco de dados iniciado em: ${dbPath}\n`);
   return db;
 }
 

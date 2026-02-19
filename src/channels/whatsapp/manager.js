@@ -1,6 +1,7 @@
 'use strict';
 
 const config = require('../../config');
+const logger = require('../../utils/logger');
 const WhatsAppClient = require('./client');
 
 /**
@@ -16,11 +17,11 @@ class WhatsAppManager {
     const numbers = config.whatsapp.numbers;
 
     if (numbers.length === 0) {
-      console.log('[WhatsApp] Nenhum número configurado. Pulando inicialização do WhatsApp.');
+      logger.warn('WhatsApp: nenhum número configurado');
       return;
     }
 
-    console.log(`[WhatsApp] Inicializando ${numbers.length} número(s)...`);
+    logger.info({ count: numbers.length }, 'WhatsApp: inicializando números');
 
     for (const number of numbers) {
       const segment = this._getSegmentForNumber(number);
@@ -32,7 +33,7 @@ class WhatsAppManager {
       await client.start();
     }
 
-    console.log('[WhatsApp] Todos os clientes iniciados.');
+    logger.info('WhatsApp: todos os clientes iniciados');
   }
 
   _getSegmentForNumber(number) {
@@ -59,7 +60,7 @@ class WhatsAppManager {
     }
 
     if (!client) {
-      console.error('[WhatsApp] Nenhum cliente conectado disponível para enviar');
+      logger.error('WhatsApp: nenhum cliente conectado disponível para enviar');
       return;
     }
 

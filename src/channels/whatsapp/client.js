@@ -14,14 +14,16 @@ const path = require('path');
 const fs = require('fs');
 const pino = require('pino');
 const config = require('../../config');
+const logger = require('../../utils/logger');
+const queue = require('../../services/queue');
 
 /**
- * Representa um cliente WhatsApp para um único número
+ * Representa um cliente WhatsApp para um único número.
  */
 class WhatsAppClient {
   constructor(number, segment, onMessage) {
     this.number = number;
-    this.segment = segment; // segmento fixo (ou null para triagem)
+    this.segment = segment;
     this.onMessage = onMessage;
     this.socket = null;
     this.isReady = false;
@@ -35,15 +37,14 @@ class WhatsAppClient {
 
     const { state, saveCreds } = await useMultiFileAuthState(this.sessionPath);
     const { version } = await fetchLatestBaileysVersion();
-
-    const logger = pino({ level: 'silent' });
+    const silentLogger = pino({ level: 'silent' });
 
     this.socket = makeWASocket({
       version,
-      logger,
+      logger: silentLogger,
       auth: {
         creds: state.creds,
-        keys: makeCacheableSignalKeyStore(state.keys, logger),
+        keys: makeCacheableSignalKeyStore(state.keys, silentLogger),
       },
       printQRInTerminal: true,
       browser: ['IA Atendimento', 'Chrome', '120.0.0'],
@@ -52,35 +53,27 @@ class WhatsAppClient {
     });
 
     this.socket.ev.on('creds.update', saveCreds);
-
-    this.socket.ev.on('connection.update', (update) => {
-      this._handleConnectionUpdate(update);
-    });
-
+    this.socket.ev.on('connection.update', (u) => this._handleConnectionUpdate(u));
     this.socket.ev.on('messages.upsert', async ({ messages, type }) => {
       if (type !== 'notify') return;
-
       for (const msg of messages) {
         await this._handleIncomingMessage(msg);
       }
     });
   }
 
-  _handleConnectionUpdate(update) {
-    const { connection, lastDisconnect, qr } = update;
-
+  _handleConnectionUpdate({ connection, lastDisconnect, qr }) {
     if (qr) {
-      console.log(`\n[WhatsApp ${this.number}] Escaneie o QR code acima para conectar o número ${this.number}`);
+      logger.info({ number: this.number }, 'Escaneie o QR code acima para conectar');
     }
 
     if (connection === 'close') {
-      const statusCode = lastDisconnect?.error instanceof Boom
+      const code = lastDisconnect?.error instanceof Boom
         ? lastDisconnect.error.output?.statusCode
         : null;
+      const shouldReconnect = code !== DisconnectReason.loggedOut;
 
-      const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
-
-      console.log(`[WhatsApp ${this.number}] Conexão encerrada. Código: ${statusCode}. Reconectar: ${shouldReconnect}`);
+      logger.warn({ number: this.number, code, shouldReconnect }, 'Conexão WhatsApp encerrada');
       this.isReady = false;
 
       if (shouldReconnect) {
@@ -89,95 +82,112 @@ class WhatsAppClient {
     }
 
     if (connection === 'open') {
-      console.log(`[WhatsApp ${this.number}] Conectado e pronto!`);
+      logger.info({ number: this.number }, 'WhatsApp conectado e pronto');
       this.isReady = true;
     }
   }
 
   async _handleIncomingMessage(msg) {
-    try {
-      // Ignora mensagens de grupos e broadcast
-      if (isJidGroup(msg.key.remoteJid) || isJidBroadcast(msg.key.remoteJid)) return;
-      // Ignora mensagens próprias
-      if (msg.key.fromMe) return;
-      // Ignora mensagens sem conteúdo
-      if (!msg.message) return;
+    if (isJidGroup(msg.key.remoteJid) || isJidBroadcast(msg.key.remoteJid)) return;
+    if (msg.key.fromMe) return;
+    if (!msg.message) return;
 
-      const from = msg.key.remoteJid;
-      const clientNumber = from.replace('@s.whatsapp.net', '');
+    const from = msg.key.remoteJid;
+    const clientNumber = from.replace('@s.whatsapp.net', '');
+    const text = this._extractMessageText(msg);
 
-      const text = this._extractMessageText(msg);
-      if (!text || text.trim().length === 0) {
-        await this._sendTextMessage(from, 'Desculpe, só consigo processar mensagens de texto por enquanto. Pode digitar sua dúvida?');
-        return;
-      }
-
-      console.log(`[WhatsApp ${this.number}] Mensagem de ${clientNumber}: ${text.substring(0, 80)}...`);
-
-      await this.onMessage({
-        channel: 'whatsapp',
-        channelId: clientNumber,
-        whatsappNumber: this.number,
-        segment: this.segment,
-        text,
-        raw: msg,
-        send: (content) => this._send(from, content),
-      });
-    } catch (err) {
-      console.error(`[WhatsApp ${this.number}] Erro ao processar mensagem:`, err);
+    if (!text || text.trim().length === 0) {
+      await this._sendText(from, 'Desculpe, só consigo processar mensagens de texto. Pode digitar sua dúvida?');
+      return;
     }
+
+    logger.info({ number: this.number, from: clientNumber, preview: text.substring(0, 60) }, 'Mensagem recebida');
+
+    // Enfileira por usuário — processa uma de cada vez, sem race condition
+    queue.enqueue(clientNumber, async () => {
+      // Typing indicator: "digitando..." enquanto a IA processa
+      await this._setTyping(from, true);
+      try {
+        await this.onMessage({
+          channel: 'whatsapp',
+          channelId: clientNumber,
+          whatsappNumber: this.number,
+          segment: this.segment,
+          text,
+          raw: msg,
+          send: (content) => this._send(from, content),
+        });
+      } finally {
+        await this._setTyping(from, false);
+      }
+    });
   }
 
   _extractMessageText(msg) {
-    const message = msg.message;
+    const m = msg.message;
     return (
-      message?.conversation ||
-      message?.extendedTextMessage?.text ||
-      message?.imageMessage?.caption ||
-      message?.videoMessage?.caption ||
-      message?.buttonsResponseMessage?.selectedDisplayText ||
-      message?.listResponseMessage?.title ||
+      m?.conversation ||
+      m?.extendedTextMessage?.text ||
+      m?.imageMessage?.caption ||
+      m?.videoMessage?.caption ||
+      m?.buttonsResponseMessage?.selectedDisplayText ||
+      m?.listResponseMessage?.title ||
       null
     );
   }
 
-  async _send(to, content) {
-    if (!this.socket || !this.isReady) {
-      console.error(`[WhatsApp ${this.number}] Socket não está pronto para enviar`);
-      return;
-    }
-
+  async _setTyping(jid, composing) {
     try {
-      if (content.type === 'text') {
-        await this._sendTextMessage(to, content.text);
-      } else if (content.type === 'audio') {
-        await this._sendAudioMessage(to, content.audioPath);
-      } else if (content.type === 'text_and_audio') {
-        await this._sendTextMessage(to, content.text);
-        await this._sendAudioMessage(to, content.audioPath);
-      }
-    } catch (err) {
-      console.error(`[WhatsApp ${this.number}] Erro ao enviar mensagem:`, err.message);
+      await this.socket.sendPresenceUpdate(composing ? 'composing' : 'paused', jid);
+    } catch {
+      // não é crítico — ignora
     }
   }
 
-  async _sendTextMessage(to, text) {
+  async _send(to, content) {
+    if (!this.socket || !this.isReady) {
+      logger.error({ number: this.number }, 'Socket não pronto para envio');
+      return;
+    }
+    try {
+      if (content.type === 'text') {
+        await this._sendText(to, content.text);
+      } else if (content.type === 'audio') {
+        await this._sendAudio(to, content.audioPath);
+      } else if (content.type === 'text_and_audio') {
+        await this._sendText(to, content.text);
+        await this._sendAudio(to, content.audioPath);
+      }
+    } catch (err) {
+      logger.error({ err: err.message, number: this.number }, 'Erro ao enviar mensagem');
+    }
+  }
+
+  async _sendText(to, text) {
     await this.socket.sendMessage(to, { text });
   }
 
-  async _sendAudioMessage(to, audioPath) {
+  async _sendAudio(to, audioPath) {
     if (!fs.existsSync(audioPath)) return;
     const audioBuffer = fs.readFileSync(audioPath);
     await this.socket.sendMessage(to, {
       audio: audioBuffer,
       mimetype: 'audio/ogg; codecs=opus',
-      ptt: true, // ptt = Push-to-talk (aparece como mensagem de voz)
+      ptt: true,
     });
   }
 
   async sendToContact(number, content) {
     const jid = number.includes('@') ? number : `${number}@s.whatsapp.net`;
     await this._send(jid, content);
+  }
+
+  async close() {
+    if (this.socket) {
+      try { await this.socket.logout(); } catch { /* ignora */ }
+      this.socket = null;
+      this.isReady = false;
+    }
   }
 
   isConnected() {

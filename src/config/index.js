@@ -72,8 +72,8 @@ function validate() {
   }
 
   if (errors.length > 0) {
-    console.error('[Config] ERROS DE CONFIGURAÇÃO:');
-    errors.forEach(e => console.error(`  - ${e}`));
+    process.stderr.write('[Config] ERROS DE CONFIGURAÇÃO:\n');
+    errors.forEach(e => process.stderr.write(`  - ${e}\n`));
     if (config.server.env === 'production') {
       process.exit(1);
     }

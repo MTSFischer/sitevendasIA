@@ -4,6 +4,7 @@ require('dotenv').config();
 
 const express = require('express');
 const config = require('./config');
+const logger = require('./utils/logger');
 const { initDb } = require('./database');
 const WhatsAppManager = require('./channels/whatsapp/manager');
 const InstagramClient = require('./channels/instagram/index');
@@ -11,19 +12,12 @@ const { routeMessage } = require('./flows/router');
 const { router: webhookRouter, setup: setupWebhooks } = require('./api/webhooks');
 
 async function main() {
-  console.log('======================================================');
-  console.log('  IA Atendimento - WhatsApp & Instagram');
-  console.log('  Limpa Nomes | Revisão Contratual | Multas CNH');
-  console.log('======================================================\n');
+  logger.info('IA Atendimento — WhatsApp & Instagram iniciando...');
 
-  // Valida configurações
   config.validate();
-
-  // Inicia banco de dados
   initDb();
-  console.log('[Main] Banco de dados OK\n');
+  logger.info('Banco de dados inicializado');
 
-  // Cria a função de callback de mensagens (closure com whatsappManager)
   let whatsappManager;
   let instagramClient;
 
@@ -31,19 +25,21 @@ async function main() {
     await routeMessage(event, whatsappManager);
   };
 
-  // ── WhatsApp ─────────────────────────────────────────────────────────────
+  // ── WhatsApp ──────────────────────────────────────────────────────────────
   whatsappManager = new WhatsAppManager(onMessage);
   await whatsappManager.start();
 
-  // ── Instagram ────────────────────────────────────────────────────────────
+  // ── Instagram ─────────────────────────────────────────────────────────────
   if (config.instagram.accessToken && config.instagram.pageId) {
     instagramClient = new InstagramClient(onMessage);
-    console.log('[Instagram] Cliente configurado. Aguardando eventos via webhook.\n');
+    // Injeta o WhatsAppManager para habilitar o bridge IG → WA
+    instagramClient.setWhatsAppManager(whatsappManager);
+    logger.info('Instagram configurado — aguardando eventos via webhook');
   } else {
-    console.log('[Instagram] Não configurado (INSTAGRAM_ACCESS_TOKEN não definido).\n');
+    logger.warn('Instagram não configurado (INSTAGRAM_ACCESS_TOKEN ausente)');
   }
 
-  // ── Servidor HTTP (para webhooks e API) ───────────────────────────────────
+  // ── Servidor HTTP ─────────────────────────────────────────────────────────
   const app = express();
   app.use(express.json({ verify: rawBodySaver }));
   app.use(express.urlencoded({ extended: true }));
@@ -51,7 +47,6 @@ async function main() {
   setupWebhooks(instagramClient, whatsappManager);
   app.use('/api', webhookRouter);
 
-  // Página inicial com instruções
   app.get('/', (req, res) => {
     res.json({
       name: 'IA Atendimento - WhatsApp & Instagram',
@@ -63,33 +58,61 @@ async function main() {
         conversations: '/api/conversations',
         webhookInstagram: '/api/webhook/instagram',
       },
-      docs: 'Consulte o README.md para instruções de configuração',
     });
   });
 
-  app.listen(config.server.port, () => {
-    console.log(`[Server] Servidor HTTP rodando na porta ${config.server.port}`);
-    console.log(`[Server] API disponível em: http://localhost:${config.server.port}/api/status`);
-    console.log(`[Server] Webhook Instagram: ${config.server.publicUrl}/api/webhook/instagram\n`);
-    console.log('Sistema pronto para atendimento!\n');
+  const server = app.listen(config.server.port, () => {
+    logger.info({
+      port: config.server.port,
+      webhookUrl: `${config.server.publicUrl}/api/webhook/instagram`,
+    }, 'Servidor HTTP pronto');
   });
 
-  // ── Tratamento de erros não capturados ────────────────────────────────────
+  // ── Graceful shutdown ─────────────────────────────────────────────────────
+  async function shutdown(signal) {
+    logger.info({ signal }, 'Sinal recebido — encerrando o sistema...');
+
+    // Para de aceitar novas requisições HTTP
+    server.close(() => logger.info('Servidor HTTP encerrado'));
+
+    // Encerra todos os sockets do WhatsApp
+    if (whatsappManager) {
+      for (const [, client] of whatsappManager.clients) {
+        await client.close().catch(() => {});
+      }
+      logger.info('Clientes WhatsApp desconectados');
+    }
+
+    // Dá 5s para tarefas em andamento terminarem; força saída depois
+    const forceExit = setTimeout(() => {
+      logger.warn('Shutdown forçado após timeout');
+      process.exit(1);
+    }, 5000);
+    forceExit.unref();
+
+    logger.info('Sistema encerrado com sucesso');
+    process.exit(0);
+  }
+
+  process.once('SIGTERM', () => shutdown('SIGTERM'));
+  process.once('SIGINT', () => shutdown('SIGINT'));
+
+  // ── Erros globais ─────────────────────────────────────────────────────────
   process.on('unhandledRejection', (reason) => {
-    console.error('[Main] Unhandled Rejection:', reason);
+    logger.error({ reason }, 'unhandledRejection');
   });
 
   process.on('uncaughtException', (err) => {
-    console.error('[Main] Uncaught Exception:', err);
+    logger.error({ err }, 'uncaughtException');
   });
 }
 
-// Salva o body raw para validação de assinatura do Meta
-function rawBodySaver(req, res, buf) {
+function rawBodySaver(req, _res, buf) {
   req.rawBody = buf;
 }
 
 main().catch(err => {
-  console.error('[Main] Erro fatal na inicialização:', err);
+  // Usa console.error aqui porque o logger pode não ter sido criado ainda
+  console.error('ERRO FATAL na inicialização:', err);
   process.exit(1);
 });
